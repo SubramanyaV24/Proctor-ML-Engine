@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "proctor-ml-engine"
+version = "1.0.0"
+description = "Generic AI inference service for proctoring"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+
+# Runtime dependencies — these are already installed in the venv.
+# Listed here for reference; use requirements.txt for pip install -r.
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]",
+    "httpx",
+    "numpy",
+    "opencv-python",
+    "onnxruntime",
+    "Pillow",
+    "torch>=2.0",
+    "torchvision",
+    "ultralytics",
+    "websockets",
+]
+
+[project.optional-dependencies]
+full = [
+    "mediapipe",
+    "sixdrepnet",
+    "silero-vad",
+    "webrtcvad-wheels",
+]
+
+[project.scripts]
+proctor-ml = "proctor_ml.main:run"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["proctor_ml*"]

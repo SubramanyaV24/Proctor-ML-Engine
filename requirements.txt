@@ -1,0 +1,29 @@
+# Core API
+fastapi==0.115.0
+uvicorn==0.34.0
+python-multipart==0.0.20
+httpx==0.27.0
+
+# Vision
+numpy==1.26.4
+opencv-python==4.11.0.86
+onnxruntime==1.21.0
+Pillow==10.3.0
+
+# Deep learning
+torch==2.6.0
+torchvision==0.21.0
+
+# Face & pose models (optional – service degrades gracefully without them)
+mediapipe==0.10.14
+sixdrepnet==0.1.6
+
+# Object detection
+ultralytics==8.2.5
+
+# Audio VAD
+silero-vad==6.2.1
+webrtcvad-wheels==2.0.14
+
+# Async
+websockets==16.0
