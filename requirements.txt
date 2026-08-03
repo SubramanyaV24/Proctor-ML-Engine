@@ -17,6 +17,8 @@ torchvision==0.21.0
 # Face & pose models (optional – service degrades gracefully without them)
 mediapipe==0.10.14
 sixdrepnet==0.1.6
+l2cs @ git+https://github.com/Ahmednull/L2CS-Net.git  # appearance-based gaze, Gaze360-trained
+huggingface-hub>=0.23.0     # reliable weight download from HuggingFace in server envs
 
 # Object detection
 ultralytics==8.2.5
@@ -27,3 +29,6 @@ webrtcvad-wheels==2.0.14
 
 # Async
 websockets==16.0
+
+# ASR (VAD Confirmation)
+faster-whisper>=1.0.0

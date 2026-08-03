@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
 import httpx
-from fastapi import APIRouter, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -247,28 +247,6 @@ async def evaluate_event_with_session(session_id: str, event: EventPayload, requ
     return {"session_id": session_id, "violations": violations}
 
 
-@router.websocket("/stream")
-async def websocket_stream(websocket: WebSocket):
-    await websocket.accept()
-    http_client: httpx.AsyncClient = websocket.app.state.http_client
-    try:
-        while True:
-            message_str = await websocket.receive_text()
-            try:
-                event = EventPayload(**json.loads(message_str))
-                violations = await _process_event(event, http_client)
-                await websocket.send_json([v.model_dump() for v in violations])
-            except Exception as exc:
-                logger.error(f"[WebSocket] Error processing message: {exc}")
-                try:
-                    await websocket.send_json({"error": str(exc)})
-                except RuntimeError:
-                    pass
-    except WebSocketDisconnect:
-        logger.info("[WebSocket] Connection closed by client")
-    except Exception as exc:
-        logger.error(f"[WebSocket] Connection error: {exc}")
-
 
 @router.post("/api/session/start", response_model=SessionStartResponse, status_code=201)
 async def start_session(payload: SessionStartRequest, request: Request):
@@ -359,9 +337,10 @@ def create_app(models) -> FastAPI:
 
     application.add_middleware(
         CORSMiddleware,
-        allow_origins=ALLOWED_ORIGINS,
-        allow_credentials=False,
-        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_origins=ALLOWED_ORIGINS if _raw_origins != "*" else [],
+        allow_origin_regex=".*" if _raw_origins == "*" else None,
+        allow_credentials=True,
+        allow_methods=["*"],
         allow_headers=["*"],
     )
 

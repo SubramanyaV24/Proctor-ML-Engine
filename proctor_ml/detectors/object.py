@@ -16,6 +16,8 @@ from proctor_ml.config import (
     PHONE_MIN_AREA_FRAC,
     PHONE_MAX_ASPECT,
     YOLO_PERSON_CONFIDENCE,
+    YOLO_SECONDARY_PERSON_CONFIDENCE,
+    YOLO_SECONDARY_IOU_MAX,
     YOLO_NMS_IOU,
 )
 from proctor_ml.models.loader import Models
@@ -37,34 +39,40 @@ def _is_plausible_phone(x1: float, y1: float, x2: float, y2: float,
     return True
 
 
-def run_yolo_once(image: np.ndarray, models: Models) -> Tuple[List[dict], List[dict]]:
-    """Run YOLO inference once and return (objects, bodies).
+def run_yolo_once(image: np.ndarray, models: Models) -> Tuple[List[dict], List[dict], List[dict]]:
+    """Run YOLO inference once and return (objects, bodies, secondary_bodies).
 
     Splitting the single inference result avoids calling YOLO twice per frame,
     which was the primary cause of high latency.
 
     Returns:
-        objects: List of suspicious-object dicts {label, confidence, x, y, w, h}
-        bodies:  List of person dicts {type, x, y, w, h, confidence}
+        objects:          List of suspicious-object dicts {label, confidence, x, y, w, h}
+        bodies:           High-confidence person detections (>= YOLO_PERSON_CONFIDENCE)
+        secondary_bodies: Lower-confidence person detections (YOLO_SECONDARY_PERSON_CONFIDENCE
+                          .. YOLO_PERSON_CONFIDENCE) that are spatially distinct from all
+                          primary bodies.  Used to catch partial/occluded background people.
     """
     if models.yolo is None:
-        return [], []
+        return [], [], []
 
     try:
-        # Pass config thresholds to YOLO — avoids redundant Python-level NMS
+        # Pass a low threshold (0.25) so YOLO outputs all candidates (phones, books).
+        # Our Python loop below will strictly filter them using the config thresholds.
         yolo_results = models.yolo(
             image,
             verbose=False,
-            conf=YOLO_PERSON_CONFIDENCE,
+            conf=0.25,
             iou=YOLO_NMS_IOU,
+            imgsz=320,
         )
     except Exception as exc:
         print(f"[Object] YOLO inference error: {exc}")
-        return [], []
+        return [], [], []
 
     img_h, img_w = image.shape[:2]
     detected_objects: List[dict] = []
-    raw_person_boxes: List[tuple] = []  # (conf, x1, y1, x2, y2)
+    raw_primary_boxes: List[tuple] = []   # conf >= YOLO_PERSON_CONFIDENCE
+    raw_secondary_boxes: List[tuple] = [] # YOLO_SECONDARY_PERSON_CONFIDENCE <= conf < YOLO_PERSON_CONFIDENCE
 
     for result in yolo_results:
         for box in result.boxes:
@@ -73,7 +81,7 @@ def run_yolo_once(image: np.ndarray, models: Models) -> Tuple[List[dict], List[d
             conf = float(box.conf[0].item())
             x1, y1, x2, y2 = box.xyxy[0].tolist()
 
-            # --- suspicious objects ---
+            # --- suspicious objects (only at normal confidence) ---
             if label in OBJECT_CONFIDENCE_THRESHOLDS:
                 if conf >= OBJECT_CONFIDENCE_THRESHOLDS[label]:
                     if label == "cell phone" and not _is_plausible_phone(x1, y1, x2, y2, img_h, img_w):
@@ -91,31 +99,57 @@ def run_yolo_once(image: np.ndarray, models: Models) -> Tuple[List[dict], List[d
                     })
 
             # --- persons ---
-            if label == "person" and conf > YOLO_PERSON_CONFIDENCE:
-                raw_person_boxes.append((conf, int(x1), int(y1), int(x2), int(y2)))
+            if label == "person":
+                if conf >= YOLO_PERSON_CONFIDENCE:
+                    raw_primary_boxes.append((conf, int(x1), int(y1), int(x2), int(y2)))
+                elif conf >= YOLO_SECONDARY_PERSON_CONFIDENCE:
+                    raw_secondary_boxes.append((conf, int(x1), int(y1), int(x2), int(y2)))
 
-    # NMS on persons
-    raw_person_boxes.sort(key=lambda b: b[0], reverse=True)
-    kept = []
-    for cand in raw_person_boxes:
-        _, cx1, cy1, cx2, cy2 = cand
-        suppress = False
-        for _, kx1, ky1, kx2, ky2 in kept:
-            ix1 = max(cx1, kx1); iy1 = max(cy1, ky1)
-            ix2 = min(cx2, kx2); iy2 = min(cy2, ky2)
-            inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
-            union = (cx2-cx1)*(cy2-cy1) + (kx2-kx1)*(ky2-ky1) - inter
-            if union > 0 and inter / union > YOLO_NMS_IOU:
-                suppress = True
-                break
-        if not suppress:
-            kept.append(cand)
+    def _nms(boxes: List[tuple]) -> List[tuple]:
+        """Greedy IoU-NMS (highest confidence first)."""
+        boxes_sorted = sorted(boxes, key=lambda b: b[0], reverse=True)
+        kept: List[tuple] = []
+        for cand in boxes_sorted:
+            _, cx1, cy1, cx2, cy2 = cand
+            suppress = False
+            for _, kx1, ky1, kx2, ky2 in kept:
+                ix1 = max(cx1, kx1); iy1 = max(cy1, ky1)
+                ix2 = min(cx2, kx2); iy2 = min(cy2, ky2)
+                inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+                union = (cx2 - cx1) * (cy2 - cy1) + (kx2 - kx1) * (ky2 - ky1) - inter
+                if union > 0 and inter / union > YOLO_NMS_IOU:
+                    suppress = True
+                    break
+            if not suppress:
+                kept.append(cand)
+        return kept
 
+    primary_kept = _nms(raw_primary_boxes)
     bodies = [
         {"type": "yolo_person", "x": x1, "y": y1, "w": x2 - x1, "h": y2 - y1, "confidence": round(conf, 2)}
-        for conf, x1, y1, x2, y2 in kept
+        for conf, x1, y1, x2, y2 in primary_kept
     ]
-    return detected_objects, bodies
+
+    # Secondary: keep only boxes that don't heavily overlap any primary body
+    secondary_bodies: List[dict] = []
+    for conf, sx1, sy1, sx2, sy2 in raw_secondary_boxes:
+        distinct = True
+        for _, px1, py1, px2, py2 in primary_kept:
+            ix1 = max(sx1, px1); iy1 = max(sy1, py1)
+            ix2 = min(sx2, px2); iy2 = min(sy2, py2)
+            inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+            union = (sx2 - sx1) * (sy2 - sy1) + (px2 - px1) * (py2 - py1) - inter
+            if union > 0 and inter / union > YOLO_SECONDARY_IOU_MAX:
+                distinct = False
+                break
+        if distinct:
+            secondary_bodies.append({
+                "type": "yolo_person_partial",
+                "x": sx1, "y": sy1, "w": sx2 - sx1, "h": sy2 - sy1,
+                "confidence": round(conf, 2),
+            })
+
+    return detected_objects, bodies, secondary_bodies
 
 
 def detect_objects(image: np.ndarray, models: Models) -> List[dict]:
@@ -124,7 +158,7 @@ def detect_objects(image: np.ndarray, models: Models) -> List[dict]:
     Prefer calling run_yolo_once() from the pipeline to avoid double inference.
     Returns list of dicts: {label, confidence, x, y, w, h}.
     """
-    objects, _ = run_yolo_once(image, models)
+    objects, _, _sec = run_yolo_once(image, models)
     return objects
 
 
@@ -137,7 +171,8 @@ def detect_bodies(image: np.ndarray, models: Models) -> List[dict]:
     Prefer calling run_yolo_once() from the pipeline to avoid double inference.
     Returns list of dicts: {type, x, y, w, h, confidence?}.
     """
-    _, bodies = run_yolo_once(image, models)
+    _, bodies, secondary = run_yolo_once(image, models)
+    all_bodies = bodies + secondary
 
     # Haar fallback (only when YOLO is unavailable)
     if models.yolo is None:
@@ -152,6 +187,6 @@ def detect_bodies(image: np.ndarray, models: Models) -> List[dict]:
                 gray, scaleFactor=1.05, minNeighbors=4, minSize=(60, 60)
             )
             for (x, y, w, h) in detections:
-                bodies.append({"type": body_type, "x": int(x), "y": int(y), "w": int(w), "h": int(h)})
+                all_bodies.append({"type": body_type, "x": int(x), "y": int(y), "w": int(w), "h": int(h)})
 
-    return bodies
+    return all_bodies

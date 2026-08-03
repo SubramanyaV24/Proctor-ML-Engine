@@ -11,7 +11,12 @@ from typing import List
 import cv2
 import numpy as np
 
-from proctor_ml.config import FACE_SCORE_MIN
+from proctor_ml.config import (
+    FACE_EDGE_MARGIN_FRAC,
+    FACE_IOU_DEDUP_THRESHOLD,
+    FACE_MIN_AREA_FRAC,
+    FACE_SCORE_MIN,
+)
 from proctor_ml.models.loader import Models
 
 
@@ -105,15 +110,110 @@ def detect_faces_haar(image: np.ndarray, models: Models) -> List[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Unified entry point
+# Post-detection filtering  (false-positive reduction)
 # ---------------------------------------------------------------------------
+def _iou(a: dict, b: dict) -> float:
+    """Intersection-over-Union for two {x, y, w, h} dicts."""
+    ax1, ay1 = a["x"], a["y"]
+    ax2, ay2 = ax1 + a["w"], ay1 + a["h"]
+    bx1, by1 = b["x"], b["y"]
+    bx2, by2 = bx1 + b["w"], by1 + b["h"]
+
+    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+    if inter == 0:
+        return 0.0
+    union = a["w"] * a["h"] + b["w"] * b["h"] - inter
+    return inter / union if union > 0 else 0.0
+
+
+def filter_faces(faces: List[dict], image_shape: tuple) -> List[dict]:
+    """Remove spurious detections that are likely reflections or duplicates.
+
+    Three passes (all thresholds are env-var tunable via config):
+
+    1. **Area filter** — faces whose box area is less than
+       ``FACE_MIN_AREA_FRAC × frame_area`` are discarded.  Genuine candidate
+       faces occupy a meaningful fraction of the frame; tiny blobs are
+       reflections or background noise.
+
+    2. **Edge-margin filter** — faces that touch within
+       ``FACE_EDGE_MARGIN_FRAC`` of any image border are discarded.  Monitor
+       reflections typically appear near frame edges; the real candidate is
+       near-centre.
+
+    3. **IoU deduplication** — when two boxes overlap above
+       ``FACE_IOU_DEDUP_THRESHOLD``, the lower-score one is removed.  This
+       collapses double-detections of a single real face from overlapping
+       anchor windows (common with MediaPipe at short ranges).
+    """
+    if not faces:
+        return faces
+
+    ih, iw = image_shape[:2]
+    frame_area = max(1, ih * iw)
+    margin_x = iw * FACE_EDGE_MARGIN_FRAC
+    margin_y = ih * FACE_EDGE_MARGIN_FRAC
+    min_area = frame_area * FACE_MIN_AREA_FRAC
+
+    # Pass 1 & 2 — area and edge-margin
+    kept: List[dict] = []
+    for f in faces:
+        if f["w"] * f["h"] < min_area:
+            continue
+        # Removed edge margin rejection: models are robust to cropped faces,
+        # and sitting close to the webcam often crops the chin.
+        kept.append(f)
+
+    # Pass 3 — IoU deduplication (greedy, highest-score first)
+    kept.sort(key=lambda f: f["score"], reverse=True)
+    deduped: List[dict] = []
+    for candidate in kept:
+        if all(_iou(candidate, accepted) < FACE_IOU_DEDUP_THRESHOLD
+               for accepted in deduped):
+            deduped.append(candidate)
+
+    return deduped
+
+
+# ---------------------------------------------------------------------------
+# SCRFD (InsightFace — highest accuracy, opt-in)
+# ---------------------------------------------------------------------------
+def detect_faces_scrfd(image: np.ndarray, models: Models) -> List[dict]:
+    """Run SCRFD face detection via the SCRFDDetector ONNX wrapper.
+
+    SCRFD-10GF achieves 83.05% WIDER FACE Hard AP.  Only active when
+    ``SCRFD_ENABLED=1`` is set in the environment and the model loaded
+    successfully (models.scrfd is not None).
+    """
+    if models.scrfd is None:
+        return []
+    try:
+        return models.scrfd.detect(image)
+    except Exception as exc:
+        print(f"[Face] SCRFD inference error: {exc}")
+        return []
+
+
 def detect_faces(image: np.ndarray, models: Models) -> tuple[List[dict], str]:
     """Run face detection using the best available detector.
 
-    Returns (faces, detector_name).
+    Priority ladder (highest accuracy first):
+      1. SCRFD      — InsightFace ONNX, 83.05 % WIDER FACE Hard AP (opt-in via SCRFD_ENABLED=1)
+      2. MediaPipe  — fast, good for near-frontal webcam faces
+      3. YuNet      — 81.1 % Hard AP, CPU-optimised via cv2.FaceDetectorYN
+      4. Haar       — legacy fallback
+
+    Returns (faces, detector_name).  All raw detections are passed through
+    ``filter_faces`` to remove reflection artefacts and duplicate boxes.
     """
-    if models.mediapipe_face is not None:
-        return detect_faces_mediapipe(image, models), "mediapipe"
-    if models.yunet is not None:
-        return detect_faces_yunet(image, models), "yunet"
-    return detect_faces_haar(image, models), "haar"
+    if models.scrfd is not None:
+        raw, name = detect_faces_scrfd(image, models), "scrfd"
+    elif models.mediapipe_face is not None:
+        raw, name = detect_faces_mediapipe(image, models), "mediapipe"
+    elif models.yunet is not None:
+        raw, name = detect_faces_yunet(image, models), "yunet"
+    else:
+        raw, name = detect_faces_haar(image, models), "haar"
+    return filter_faces(raw, image.shape), name

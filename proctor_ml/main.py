@@ -14,6 +14,9 @@ import logging
 
 import uvicorn
 
+import torch
+torch.set_num_threads(1)  # Prevent CPU thrashing under high concurrent load
+
 from proctor_ml.api.routes import create_app
 from proctor_ml.models.loader import load_all_models
 

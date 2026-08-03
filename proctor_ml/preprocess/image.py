@@ -32,3 +32,23 @@ def decode_base64_image(b64_string: str) -> Optional[np.ndarray]:
     except Exception as exc:
         print(f"[Preprocess] Image decode error: {exc}")
         return None
+
+
+def decode_binary_image(img_bytes: bytes) -> Optional[np.ndarray]:
+    """Decode a raw binary image (JPEG/WebP) to a BGR NumPy array.
+
+    The image is flipped horizontally so bounding boxes align with a
+    CSS-mirrored front-end camera preview.
+
+    Returns None on any decoding error.
+    """
+    try:
+        img_array = np.frombuffer(img_bytes, dtype=np.uint8)
+        img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        if img is None:
+            return None
+        # Mirror to match the frontend's CSS-mirrored camera preview
+        return cv2.flip(img, 1)
+    except Exception as exc:
+        print(f"[Preprocess] Binary image decode error: {exc}")
+        return None

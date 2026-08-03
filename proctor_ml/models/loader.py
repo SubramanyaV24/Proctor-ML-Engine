@@ -24,6 +24,10 @@ from proctor_ml.config import (
     YUNET_SCORE_THRESHOLD, YUNET_NMS_THRESHOLD,
     YOLO_FILENAME, YOLO_DOWNLOAD_URL,
     SIXDREPNET_CHECKPOINT,
+    SCRFD_ENABLED, SCRFD_MODEL_NAME, SCRFD_HF_REPO,
+    SCRFD_SCORE_THRESHOLD, SCRFD_NMS_THRESHOLD, SCRFD_INPUT_SIZE,
+    L2CS_ENABLED, L2CS_CHECKPOINT, L2CS_HF_REPO, L2CS_HF_FILENAME,
+    WHISPER_ENABLED, WHISPER_MODEL,
 )
 
 
@@ -33,15 +37,18 @@ from proctor_ml.config import (
 @dataclass
 class Models:
     yunet: Optional[object] = None               # cv2.FaceDetectorYN
+    scrfd: Optional[object] = None               # SCRFDDetector (onnxruntime wrapper)
     haar_face: Optional[object] = None           # cv2.CascadeClassifier
     haar_upper: Optional[object] = None          # cv2.CascadeClassifier
     haar_full: Optional[object] = None           # cv2.CascadeClassifier
     mediapipe_face: Optional[object] = None      # mp.solutions.face_detection.FaceDetection
     head_pose: Optional[object] = None           # SixDRepNet
+    l2cs_gaze: Optional[object] = None           # L2CS-Net gaze model
     yolo: Optional[object] = None                # ultralytics.YOLO
     silero_vad: Optional[object] = None          # silero VAD model
     silero_get_timestamps: Optional[object] = None
     webrtc_vad: Optional[object] = None          # webrtcvad.Vad
+    whisper: Optional[object] = None             # Faster Whisper model
 
 
 def _ensure_dir(path: str) -> None:
@@ -127,17 +134,126 @@ def _load_sixdrepnet() -> dict:
         return {}
 
 
+def _load_scrfd() -> dict:
+    """Load SCRFD face detector from a local ONNX file or download from HuggingFace Hub.
+
+    Only runs when SCRFD_ENABLED=1. The ONNX weights are licensed for
+    non-commercial research use (InsightFace); check before enabling in production.
+    """
+    if not SCRFD_ENABLED:
+        return {}
+    try:
+        import onnxruntime as ort
+        from huggingface_hub import hf_hub_download
+    except ImportError as exc:
+        print(f"[Loader] WARNING: SCRFD unavailable — missing dependency ({exc})")
+        return {}
+
+    local_path = os.path.join(MODEL_WEIGHTS_DIR, SCRFD_MODEL_NAME)
+    if not os.path.exists(local_path):
+        print(f"[Loader] Downloading {SCRFD_MODEL_NAME} from {SCRFD_HF_REPO} ...")
+        try:
+            local_path = hf_hub_download(
+                repo_id=SCRFD_HF_REPO,
+                filename=SCRFD_MODEL_NAME,
+                local_dir=MODEL_WEIGHTS_DIR,
+                local_dir_use_symlinks=False,
+            )
+            print(f"[Loader] SCRFD downloaded → {local_path}")
+        except Exception as exc:
+            print(f"[Loader] WARNING: SCRFD download failed ({exc})")
+            return {}
+
+    try:
+        sess_opts = ort.SessionOptions()
+        sess_opts.inter_op_num_threads = 2
+        sess_opts.intra_op_num_threads = 2
+        session = ort.InferenceSession(
+            local_path,
+            sess_options=sess_opts,
+            providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+        )
+        # Wrap in a small helper to keep the detector interface uniform
+        from proctor_ml.detectors._scrfd import SCRFDDetector
+        detector = SCRFDDetector(
+            session=session,
+            input_size=SCRFD_INPUT_SIZE,
+            score_threshold=SCRFD_SCORE_THRESHOLD,
+            nms_threshold=SCRFD_NMS_THRESHOLD,
+        )
+        print(f"[Loader] SCRFD ({SCRFD_MODEL_NAME}) loaded.")
+        return {"scrfd": detector}
+    except Exception as exc:
+        print(f"[Loader] WARNING: SCRFD load failed ({exc})")
+        return {}
+
+
+def _load_l2cs() -> dict:
+    """Load L2CS-Net gaze model (ResNet-50, Gaze360-trained).
+
+    Downloads L2CSNet_gaze360.pkl from HuggingFace Hub on first run (~100 MB).
+    Set L2CS_ENABLED=0 to disable; service falls back to 6DRepNet head-pose only.
+    """
+    if not L2CS_ENABLED:
+        return {}
+    try:
+        import torch
+        from l2cs import Pipeline as L2CSPipeline  # noqa: F401 — existence check
+        from huggingface_hub import hf_hub_download
+    except ImportError as exc:
+        print(f"[Loader] WARNING: L2CS-Net unavailable — missing dependency ({exc})")
+        return {}
+
+    local_path = os.path.join(MODEL_WEIGHTS_DIR, L2CS_CHECKPOINT)
+    if not os.path.exists(local_path):
+        print(f"[Loader] Downloading {L2CS_HF_FILENAME} from {L2CS_HF_REPO} ...")
+        try:
+            local_path = hf_hub_download(
+                repo_id=L2CS_HF_REPO,
+                filename=L2CS_HF_FILENAME,
+                local_dir=MODEL_WEIGHTS_DIR,
+                local_dir_use_symlinks=False,
+            )
+            print(f"[Loader] L2CS-Net weights downloaded → {local_path}")
+        except Exception as exc:
+            print(f"[Loader] WARNING: L2CS-Net download failed ({exc})")
+            return {}
+
+    try:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        from proctor_ml.detectors._l2cs import L2CSGazeModel
+        gaze_model = L2CSGazeModel(checkpoint_path=local_path, device=device)
+        print(f"[Loader] L2CS-Net gaze model loaded on {device}.")
+        return {"l2cs_gaze": gaze_model}
+    except Exception as exc:
+        print(f"[Loader] WARNING: L2CS-Net load failed ({exc})")
+        return {}
+
+
 def _load_yolo() -> dict:
     try:
         import torch
+        import ultralytics
         from ultralytics import YOLO
+        
         yolo_path = os.path.join(MODEL_WEIGHTS_DIR, YOLO_FILENAME)
         if not os.path.exists(yolo_path):
             print("[Loader] Downloading YOLO weights ...")
             torch.hub.download_url_to_file(YOLO_DOWNLOAD_URL, yolo_path)
-        # ultralytics handles its own safe_globals internally — load via
-        # the YOLO wrapper which sets up serialization correctly for .pt files
-        yolo = YOLO(yolo_path, task="detect")
+
+        # PyTorch 2.6 defaults to weights_only=True which breaks YOLO.
+        # Ultralytics internally uses torch.load so we patch it temporarily.
+        _original_load = torch.load
+        def _safe_load(*args, **kwargs):
+            kwargs["weights_only"] = False
+            return _original_load(*args, **kwargs)
+        
+        try:
+            torch.load = _safe_load
+            yolo = YOLO(yolo_path, task="detect")
+        finally:
+            torch.load = _original_load
+            
         print(f"[Loader] YOLO loaded from {yolo_path}.")
         return {"yolo": yolo}
     except Exception as exc:
@@ -178,6 +294,22 @@ def _load_webrtc_vad() -> dict:
         return {}
 
 
+def _load_whisper() -> dict:
+    if not WHISPER_ENABLED:
+        return {}
+    try:
+        from faster_whisper import WhisperModel
+        import torch
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        compute_type = "float16" if device == "cuda" else "int8"
+        model = WhisperModel(WHISPER_MODEL, device=device, compute_type=compute_type, download_root=MODEL_WEIGHTS_DIR)
+        print(f"[Loader] Faster Whisper ({WHISPER_MODEL}) loaded on {device} ({compute_type}).")
+        return {"whisper": model}
+    except Exception as exc:
+        print(f"[Loader] WARNING: Faster Whisper not available ({exc})")
+        return {}
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
@@ -191,15 +323,17 @@ def load_all_models() -> Models:
         _load_haar,
         _load_mediapipe,
         _load_sixdrepnet,
+        _load_scrfd,
+        _load_l2cs,
         _load_yolo,
         _load_silero_vad,
         _load_webrtc_vad,
+        _load_whisper,
     ]
 
     results: dict = {}
-    # Use at most 4 threads — model loading is partly I/O (disk reads) and
-    # partly compute (weight initialisation). More threads don't help beyond ~4.
-    with ThreadPoolExecutor(max_workers=min(4, len(loaders))) as pool:
+    # Use 1 thread to avoid OOM spikes on constrained hardware (SIGKILL 137).
+    with ThreadPoolExecutor(max_workers=1) as pool:
         futures = {pool.submit(fn): fn.__name__ for fn in loaders}
         for future in as_completed(futures):
             try:

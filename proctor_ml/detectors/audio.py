@@ -15,6 +15,29 @@ import numpy as np
 from proctor_ml.models.loader import Models
 
 
+def _verify_with_whisper(audio_bytes: bytes, multi: bool, confidence: float, models: Models) -> Tuple[bool, float]:
+    """If VAD detects speech, use Faster-Whisper to confirm it contains actual words."""
+    if not multi and confidence <= 0.0:
+        return multi, confidence
+        
+    if models.whisper is None:
+        return multi, confidence
+
+    # Decode if not already decoded
+    waveform = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+
+    try:
+        segments, _ = models.whisper.transcribe(waveform, beam_size=1, language="en", vad_filter=False)
+        text = "".join([segment.text for segment in segments]).strip()
+        # If no meaningful text was decoded, it was likely background noise (keyboard, fan, etc.)
+        if not text:
+            return False, 0.0
+    except Exception as exc:
+        print(f"[Audio] Whisper verification error: {exc}")
+
+    return multi, confidence
+
+
 def detect_speech(audio_bytes: bytes, models: Models) -> Tuple[bool, float]:
     """Run VAD on raw 16-bit mono PCM bytes at 16 kHz.
 
@@ -43,7 +66,7 @@ def detect_speech(audio_bytes: bytes, models: Models) -> Tuple[bool, float]:
             for i in range(1, len(speech_ts))
         ]
         multi = len(speech_ts) > 1 and any(g < 300 for g in gaps_ms)
-        return multi, float(confidence)
+        return _verify_with_whisper(audio_bytes, multi, float(confidence), models)
 
     # ---- WebRTC VAD (fallback) ------------------------------------------
     if models.webrtc_vad is None:
@@ -75,4 +98,4 @@ def detect_speech(audio_bytes: bytes, models: Models) -> Tuple[bool, float]:
 
     confidence = speech_frames / total_frames
     multi = max_contiguous >= 75  # ~2.25 s of continuous speech
-    return multi, float(confidence)
+    return _verify_with_whisper(audio_bytes, multi, float(confidence), models)
