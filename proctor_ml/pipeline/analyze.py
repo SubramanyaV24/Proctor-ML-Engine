@@ -154,7 +154,7 @@ def analyze_image(image_data: str | bytes, session_id: str, models: Models) -> D
         for i, obj in enumerate(detected_objects):
             logger.debug(f"object[{i}]={obj}")
 
-    raw_phone = any(o["label"] in ["cell phone", "remote"] for o in detected_objects)
+    raw_phone = any(o["label"] == "cell phone" for o in detected_objects)
     result["phoneDetected"]          = state.phone_detected.update(raw_phone, logger=logger)
     result["phoneDurationMs"]        = state.phone_duration.update(result["phoneDetected"])
     result["secondaryDeviceDetected"] = False  # hardware/API detection only

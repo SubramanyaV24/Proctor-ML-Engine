@@ -28,6 +28,7 @@ from proctor_ml.config import (
     SCRFD_SCORE_THRESHOLD, SCRFD_NMS_THRESHOLD, SCRFD_INPUT_SIZE,
     L2CS_ENABLED, L2CS_CHECKPOINT, L2CS_HF_REPO, L2CS_HF_FILENAME,
     WHISPER_ENABLED, WHISPER_MODEL,
+    PHONE_VERIFIER_ENABLED, PHONE_VERIFIER_MODEL, PHONE_VERIFIER_THRESHOLD
 )
 
 
@@ -49,6 +50,7 @@ class Models:
     silero_get_timestamps: Optional[object] = None
     webrtc_vad: Optional[object] = None          # webrtcvad.Vad
     whisper: Optional[object] = None             # Faster Whisper model
+    phone_verifier: Optional[object] = None      # PhoneVerifier
 
 
 def _ensure_dir(path: str) -> None:
@@ -310,6 +312,23 @@ def _load_whisper() -> dict:
         return {}
 
 
+def _load_phone_verifier() -> dict:
+    if not PHONE_VERIFIER_ENABLED:
+        return {}
+    try:
+        from proctor_ml.verifiers.phone_verifier import PhoneVerifier
+        print("[Loader] Loading Mobile Phone Verifier...")
+        verifier = PhoneVerifier(
+            model_name=PHONE_VERIFIER_MODEL,
+            threshold=PHONE_VERIFIER_THRESHOLD
+        )
+        print("[Loader] Mobile Phone Verifier loaded.")
+        return {"phone_verifier": verifier}
+    except Exception as exc:
+        print(f"[Loader] WARNING: Phone Verifier failed to load: {exc}")
+        return {}
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
@@ -329,6 +348,7 @@ def load_all_models() -> Models:
         _load_silero_vad,
         _load_webrtc_vad,
         _load_whisper,
+        _load_phone_verifier,
     ]
 
     results: dict = {}

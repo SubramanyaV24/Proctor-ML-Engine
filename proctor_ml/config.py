@@ -86,12 +86,18 @@ YOLO_SECONDARY_IOU_MAX: float = float(os.getenv("YOLO_SECONDARY_IOU_MAX", "0.30"
 YOLO_NMS_IOU: float = float(os.getenv("YOLO_NMS_IOU", "0.45"))
 
 # Per-label confidence thresholds for suspicious object detection
+PHONE_DETECTION_THRESHOLD: float = float(os.getenv("PHONE_DETECTION_THRESHOLD", "0.60"))
 OBJECT_CONFIDENCE_THRESHOLDS: dict = {
-    "cell phone": float(os.getenv("CONF_CELL_PHONE", "0.45")),
+    "cell phone": PHONE_DETECTION_THRESHOLD,
     "remote":     float(os.getenv("CONF_REMOTE",     "0.45")),
     "laptop":     float(os.getenv("CONF_LAPTOP",     "0.50")),
     "book":       float(os.getenv("CONF_BOOK",       "0.50")),
 }
+
+# Mobile Phone Secondary Verification
+PHONE_VERIFIER_ENABLED: bool = os.getenv("PHONE_VERIFIER_ENABLED", "True").lower() == "true"
+PHONE_VERIFIER_MODEL: str = os.getenv("PHONE_VERIFIER_MODEL", "mobilenet_v3_small")
+PHONE_VERIFIER_THRESHOLD: float = float(os.getenv("PHONE_VERIFIER_THRESHOLD", "0.50"))
 
 # Minimum phone bounding-box area as a fraction of the frame
 PHONE_MIN_AREA_FRAC: float = float(os.getenv("PHONE_MIN_AREA_FRAC", "0.001"))
