@@ -94,7 +94,11 @@ def detect_speech(audio_bytes: bytes, models: Models) -> Tuple[bool, float]:
         import torch
         waveform_t = torch.from_numpy(waveform)
         speech_ts = models.silero_get_timestamps(
-            waveform_t, models.silero_vad, sampling_rate=16000
+            waveform_t, 
+            models.silero_vad, 
+            sampling_rate=16000,
+            threshold=0.3,
+            speech_pad_ms=400
         )
         if not speech_ts:
             return False, 0.0

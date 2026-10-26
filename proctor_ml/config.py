@@ -151,6 +151,34 @@ WHISPER_ENABLED: bool = os.getenv("WHISPER_ENABLED", "1") == "1"
 WHISPER_MODEL: str = os.getenv("WHISPER_MODEL", "tiny.en")
 
 # ---------------------------------------------------------------------------
+# Violation detection speed
+# ---------------------------------------------------------------------------
+# BooleanSmoother parameters for fast-path violations.
+# Reducing the window / threshold means violations are raised after fewer
+# consecutive positive frames → quicker feedback to the candidate.
+#
+# phone_detected:  window=2, threshold=2  (was 3/2) → 2 consecutive frames
+# looking_away:    RollingSmoother alpha raised from 0.4 → 0.6 (faster EMA)
+# face_missing:    no smoother needed; duration tracking starts immediately
+# noise (audio):   window=2, threshold=2  (was 3/2) → 2 consecutive frames
+PHONE_SMOOTHER_WINDOW: int = int(os.getenv("PHONE_SMOOTHER_WINDOW", "2"))
+PHONE_SMOOTHER_THRESHOLD: int = int(os.getenv("PHONE_SMOOTHER_THRESHOLD", "2"))
+NOISE_SMOOTHER_WINDOW: int = int(os.getenv("NOISE_SMOOTHER_WINDOW", "2"))
+NOISE_SMOOTHER_THRESHOLD: int = int(os.getenv("NOISE_SMOOTHER_THRESHOLD", "2"))
+# Higher alpha = faster convergence of the EMA for gaze angles
+GAZE_EMA_ALPHA: float = float(os.getenv("GAZE_EMA_ALPHA", "0.6"))
+
+# ---------------------------------------------------------------------------
+# Post-violation cooldown (seconds)
+# ---------------------------------------------------------------------------
+# After a violation is flagged, further violations of the same type are
+# suppressed for this many seconds so the candidate has time to self-correct.
+# The FIRST occurrence uses the longer cooldown; subsequent occurrences use
+# the shorter one.
+VIOLATION_COOLDOWN_FIRST_S: float = float(os.getenv("VIOLATION_COOLDOWN_FIRST_S", "8.0"))
+VIOLATION_COOLDOWN_REPEAT_S: float = float(os.getenv("VIOLATION_COOLDOWN_REPEAT_S", "4.0"))
+
+# ---------------------------------------------------------------------------
 # API
 # ---------------------------------------------------------------------------
 MAX_PAYLOAD_BYTES: int = int(os.getenv("MAX_PAYLOAD_BYTES", str(5 * 1024 * 1024)))  # 5 MB

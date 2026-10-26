@@ -63,15 +63,23 @@ def analyze_image(image_data: str | bytes, session_id: str, models: Models) -> D
         "body_detector": "none",
         "multipleBodies": False,
         "partialBodyDetected": False,
-        "detectedObjects": [],
         "phoneDetected": False,
         "secondaryDeviceDetected": False,
-        "bookDetected": False,
         "multipleFacesDurationMs": 0,
         "multiplePeopleDurationMs": 0,
         "faceMissingDurationMs": 0,
         "lookAwayDurationMs": 0,
         "phoneDurationMs": 0,
+        # Cooldown-gated violation flags ─────────────────────────────────────
+        # True only when the underlying condition is active AND the post-
+        # violation cooldown has elapsed (first occurrence: 8 s gap; subsequent
+        # occurrences: 4 s gap).  Use these to drive candidate alerts;
+        # use the raw flags (phoneDetected, lookingAway, …) for dashboards.
+        "phoneViolation": False,
+        "lookAwayViolation": False,
+        "faceMissingViolation": False,
+        "noiseViolation": False,
+        # ─────────────────────────────────────────────────────────────────────
         "processingTimeMs": 0,
         "error": None,
     }
@@ -147,8 +155,6 @@ def analyze_image(image_data: str | bytes, session_id: str, models: Models) -> D
         result["body_detector"] = "inferred"
 
     # ------------------------------------------------------------ objects (already computed above)
-    result["detectedObjects"] = detected_objects
-
     if logger.isEnabledFor(logging.DEBUG):
         logger.debug(f"objects={len(detected_objects)}")
         for i, obj in enumerate(detected_objects):
@@ -158,7 +164,12 @@ def analyze_image(image_data: str | bytes, session_id: str, models: Models) -> D
     result["phoneDetected"]          = state.phone_detected.update(raw_phone, logger=logger)
     result["phoneDurationMs"]        = state.phone_duration.update(result["phoneDetected"])
     result["secondaryDeviceDetected"] = False  # hardware/API detection only
-    result["bookDetected"]           = any(o["label"] == "book" for o in detected_objects)
+
+    # Cooldown-gated violation: phone
+    result["phoneViolation"] = state.phone_cooldown.allow(result["phoneDetected"])
+
+    # Cooldown-gated violation: face missing (no smoother, fires immediately)
+    result["faceMissingViolation"] = state.face_missing_cooldown.allow(face_count == 0)
 
     if not faces and not bodies and not detected_objects:
         result["processingTimeMs"] = _elapsed(t0)
@@ -198,6 +209,8 @@ def analyze_image(image_data: str | bytes, session_id: str, models: Models) -> D
             )
             result["lookingAway"] = looking_away
             result["lookAwayDurationMs"] = state.look_away_duration.update(looking_away)
+            # Cooldown-gated violation: looking away
+            result["lookAwayViolation"] = state.look_away_cooldown.allow(looking_away)
 
             # Record whether L2CS confirmed or suppressed the head-pose signal
             if l2cs_gaze is not None:
@@ -243,15 +256,18 @@ def analyze_image(image_data: str | bytes, session_id: str, models: Models) -> D
     result["body_box"] = result["bodyBox"]
     result["multiple_bodies"] = result["multipleBodies"]
     result["partial_body_detected"] = result["partialBodyDetected"]
-    result["detected_objects"] = result["detectedObjects"]
     result["phone_detected"] = result["phoneDetected"]
     result["secondary_device_detected"] = result["secondaryDeviceDetected"]
-    result["book_detected"] = result["bookDetected"]
     result["multiple_faces_duration_ms"] = result["multipleFacesDurationMs"]
     result["multiple_people_duration_ms"] = result["multiplePeopleDurationMs"]
     result["face_missing_duration_ms"] = result["faceMissingDurationMs"]
     result["look_away_duration_ms"] = result["lookAwayDurationMs"]
     result["phone_duration_ms"] = result["phoneDurationMs"]
+    # Snake-case aliases for cooldown-gated violation flags
+    result["phone_violation"] = result["phoneViolation"]
+    result["look_away_violation"] = result["lookAwayViolation"]
+    result["face_missing_violation"] = result["faceMissingViolation"]
+    result["noise_violation"] = result["noiseViolation"]
 
     return result
 
@@ -286,7 +302,13 @@ def analyze_audio(audio_data: str | bytes, session_id: str, models: Models) -> D
         logger.debug(f"audio raw multi={multi} conf={confidence:.2f} "
                      f"→ smoothed multi={smoothed_multi} conf={smoothed_conf:.2f}")
 
-    return {"multi_speaker": smoothed_multi, "speech_confidence": smoothed_conf}
+    return {
+        "multi_speaker": smoothed_multi,
+        "speech_confidence": smoothed_conf,
+        # Cooldown-gated noise violation — use this to drive candidate alerts.
+        # First occurrence: 8 s gap; subsequent occurrences: 4 s gap.
+        "noise_violation": state.noise_cooldown.allow(smoothed_multi),
+    }
 
 
 # ---------------------------------------------------------------------------
