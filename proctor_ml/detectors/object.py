@@ -69,6 +69,7 @@ from proctor_ml.config import (
     YOLO_SECONDARY_PERSON_CONFIDENCE,
     YOLO_SECONDARY_IOU_MAX,
     YOLO_NMS_IOU,
+    YOLO_IMGSZ,
 )
 from proctor_ml.models.loader import Models
 
@@ -184,7 +185,7 @@ def run_yolo_once(image: np.ndarray, models: Models) -> Tuple[List[dict], List[d
             verbose=False,
             conf=0.25,
             iou=YOLO_NMS_IOU,
-            imgsz=320,
+            imgsz=YOLO_IMGSZ,
         )
     except Exception as exc:
         logger.error("[Object] YOLO inference error: %s", exc)

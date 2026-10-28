@@ -171,10 +171,17 @@ async def health():
 async def list_models(request: Request):
     m = request.app.state.models
     return {
-        "yunet":     m.yunet is not None,
-        "head_pose": m.head_pose is not None,
-        "yolo":      m.yolo is not None,
-        "audio_vad": (m.silero_vad is not None or m.webrtc_vad is not None),
+        "yunet":          m.yunet is not None,
+        "scrfd":          m.scrfd is not None,
+        "mediapipe_face": m.mediapipe_face is not None,
+        "head_pose":      m.head_pose is not None,
+        "l2cs_gaze":      m.l2cs_gaze is not None,
+        "yolo":           m.yolo is not None,
+        "phone_verifier": m.phone_verifier is not None,
+        "silero_vad":     m.silero_vad is not None,
+        "webrtc_vad":     m.webrtc_vad is not None,
+        "whisper":        m.whisper is not None,
+        "audio_vad":      (m.silero_vad is not None or m.webrtc_vad is not None),
     }
 
 

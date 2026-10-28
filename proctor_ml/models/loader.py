@@ -127,7 +127,19 @@ def _load_sixdrepnet() -> dict:
         if not os.path.exists(checkpoint_path):
             print(f"[Loader] WARNING: 6DRepNet checkpoint not found at {checkpoint_path}")
             return {}
-        head_pose = SixDRepNet(gpu_id=gpu_id, dict_path=checkpoint_path)
+
+        # PyTorch 2.6 defaults to weights_only=True which breaks older checkpoints
+        _original_load = torch.load
+        def _safe_load(*args, **kwargs):
+            kwargs["weights_only"] = False
+            return _original_load(*args, **kwargs)
+
+        try:
+            torch.load = _safe_load
+            head_pose = SixDRepNet(gpu_id=gpu_id, dict_path=checkpoint_path)
+        finally:
+            torch.load = _original_load
+
         device = "cuda" if gpu_id >= 0 else "cpu"
         print(f"[Loader] 6DRepNet loaded on {device}.")
         return {"head_pose": head_pose}
@@ -264,6 +276,13 @@ def _load_yolo() -> dict:
 
 
 def _load_silero_vad() -> dict:
+    try:
+        from silero_vad import load_silero_vad, get_speech_timestamps
+        vad_onnx = load_silero_vad(onnx=True)
+        print("[Loader] Silero VAD loaded (ONNX).")
+        return {"silero_vad": vad_onnx, "silero_get_timestamps": get_speech_timestamps}
+    except Exception:
+        pass
     try:
         import sys
         hub_src = os.path.join(MODEL_WEIGHTS_DIR, "snakers4_silero-vad_master", "src")

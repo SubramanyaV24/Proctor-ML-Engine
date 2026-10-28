@@ -84,6 +84,7 @@ YOLO_SECONDARY_PERSON_CONFIDENCE: float = float(os.getenv("YOLO_SECONDARY_PERSON
 # from the primary candidate's body (avoids double-counting the same person)
 YOLO_SECONDARY_IOU_MAX: float = float(os.getenv("YOLO_SECONDARY_IOU_MAX", "0.30"))
 YOLO_NMS_IOU: float = float(os.getenv("YOLO_NMS_IOU", "0.45"))
+YOLO_IMGSZ: int = int(os.getenv("YOLO_IMGSZ", "480"))
 
 # Per-label confidence thresholds for suspicious object detection
 PHONE_DETECTION_THRESHOLD: float = float(os.getenv("PHONE_DETECTION_THRESHOLD", "0.60"))
