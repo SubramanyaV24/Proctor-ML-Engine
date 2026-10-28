@@ -212,6 +212,12 @@ def analyze_image(image_data: str | bytes, session_id: str, models: Models) -> D
             # Cooldown-gated violation: looking away
             result["lookAwayViolation"] = state.look_away_cooldown.allow(looking_away)
 
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    f"pose: yaw={pose['yaw']:.1f} (smoothed={yaw_s:.1f}), "
+                    f"pitch={pose['pitch']:.1f} (smoothed={pitch_s:.1f}) → lookingAway={looking_away}"
+                )
+
             # Record whether L2CS confirmed or suppressed the head-pose signal
             if l2cs_gaze is not None:
                 from proctor_ml.config import (
